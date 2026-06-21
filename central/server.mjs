@@ -15,6 +15,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { spawn } from "node:child_process";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MATTER_WS = process.env.MATTER_WS || "ws://127.0.0.1:5580/ws";
@@ -43,6 +44,7 @@ const nodes = new Map(); // node_id -> raw node object from matter-server
 let ws = null;
 let connected = false;
 let serverInfo = null;
+let compressedFabricId = null; // our fabric's compressed id (for mDNS matching)
 let msgId = 0;
 const pending = new Map(); // message_id -> {resolve, reject}
 
@@ -73,6 +75,7 @@ function connect() {
     // First frame is the ServerInfo handshake.
     if (m.sdk_version && !connected) {
       serverInfo = m;
+      compressedFabricId = m.compressed_fabric_id ?? null;
       connected = true;
       console.log("controller ready — fabric", m.fabric_id, "sdk", m.sdk_version);
       rpc("start_listening").then((result) => {
@@ -172,6 +175,67 @@ function decodeNode(n) {
 
 const devices = () => [...nodes.values()].map(decodeNode).sort((a, b) => a.nodeId - b.nodeId);
 
+// ---- Passive mDNS discovery (every Matter device on the LAN) ---------------
+// Browses for Matter service types via macOS `dns-sd`. This needs NO fabric
+// membership — it's the open "discovery" layer. Operational devices only reveal
+// an opaque <fabric>-<node> id; commissionable ones additionally broadcast their
+// vendor/product, which we map to the certified-device catalog.
+
+function browse(type, ms = 6000) {
+  return new Promise((resolve) => {
+    const marker = type + ".";
+    const found = new Set();
+    let p;
+    try { p = spawn("dns-sd", ["-B", type, "local."]); }
+    catch { return resolve([]); }
+    p.stdout.on("data", (buf) => {
+      for (const line of buf.toString().split("\n")) {
+        if (!line.includes(" Add ")) continue;
+        const i = line.indexOf(marker);
+        if (i < 0) continue;
+        const inst = line.slice(i + marker.length).trim();
+        if (inst) found.add(inst);
+      }
+    });
+    p.on("error", () => resolve([]));
+    setTimeout(() => { try { p.kill("SIGTERM"); } catch {} resolve([...found]); }, ms);
+  });
+}
+
+async function discover() {
+  const [operational, commissionable] = await Promise.all([
+    browse("_matter._tcp", 6000),
+    browse("_matterc._udp", 6000),
+  ]);
+  // A fabric is "mine" if its compressed id matches our controller's. Both the
+  // mDNS hex and the controller value collapse to the same JS double, so this
+  // comparison is exact in practice despite >53-bit ids. Our controller node
+  // (0x…1B669) also lives on our fabric but isn't a commissioned device.
+  const CONTROLLER_NODE = serverInfo ? `${serverInfo.compressed_fabric_id}` : null;
+  const fabrics = {};
+  for (const inst of operational) {
+    const [fabric, node] = inst.split("-");
+    const mine = compressedFabricId != null && Number("0x" + fabric) === compressedFabricId;
+    fabrics[fabric] ||= { fabric, mine, nodes: [] };
+    fabrics[fabric].nodes.push(node || "");
+  }
+  // On our own fabric, drop the controller's self-advertisement from the device
+  // count (its node id is the controller, not a real device).
+  for (const f of Object.values(fabrics)) {
+    if (f.mine) f.deviceNodes = f.nodes.filter((n) => parseInt(n, 16) !== 112233);
+    else f.deviceNodes = f.nodes;
+  }
+  const foreign = Object.values(fabrics).filter((f) => !f.mine);
+  return {
+    fabricsTotal: Object.keys(fabrics).length,
+    foreignFabrics: foreign.length,
+    foreignDevices: foreign.reduce((a, f) => a + f.deviceNodes.length, 0),
+    commissionableCount: commissionable.length,
+    fabrics: Object.values(fabrics).sort((a, b) => (b.mine ? 1 : 0) - (a.mine ? 1 : 0)),
+    commissionable,
+  };
+}
+
 // ---- HTTP / API ------------------------------------------------------------
 
 async function readBody(req) {
@@ -201,6 +265,11 @@ const server = createServer(async (req, res) => {
         controller: serverInfo && { fabricId: serverInfo.fabric_id, sdk: serverInfo.sdk_version },
         devices: devices(),
       });
+    }
+
+    if (url.pathname === "/api/discover") {
+      try { return json(res, 200, await discover()); }
+      catch (err) { return json(res, 500, { error: err.message }); }
     }
 
     if (url.pathname === "/api/commission" && req.method === "POST") {

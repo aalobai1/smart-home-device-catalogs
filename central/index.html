@@ -84,6 +84,29 @@
            font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
   .unavail { opacity: .55; }
+  .sec { font-size: 13px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted);
+         margin: 28px 0 12px; font-weight: 600; }
+  .disco { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
+  .disco-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .disco-title { font-weight: 640; }
+  .disco-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .stat { display: flex; gap: 20px; }
+  .stat b { font-size: 22px; font-weight: 700; display: block; line-height: 1.1; }
+  .stat span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  .fabrics { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+  .fab { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border-radius: 11px;
+         background: #0e131b; border: 1px solid var(--line); }
+  .fab.mine { border-color: #2e6b54; background: #0e1a16; }
+  .fab .fdot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); flex: none; }
+  .fab.mine .fdot { background: var(--on); }
+  .fab .fmain { flex: 1; min-width: 0; }
+  .fab .fname { font-size: 13px; font-weight: 600; }
+  .fab .fid { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #66708a; }
+  .fab .fcount { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+  .tag { font-size: 10.5px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .tag.you { background: #14352a; color: var(--on); }
+  .tag.other { background: #3a2f17; color: var(--warn); }
+  .spin { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -102,6 +125,8 @@
     <button id="add">Add device</button>
     <button id="refresh" class="ghost">Refresh</button>
   </div>
+  <section id="discovery"></section>
+  <h2 class="sec">On your fabric</h2>
   <div id="view"></div>
 </main>
 
@@ -191,11 +216,51 @@ async function render() {
   view.innerHTML = `<div class="grid">${s.devices.map(deviceCard).join("")}</div>`;
 }
 
+function renderDiscovery(d) {
+  const el = document.getElementById("discovery");
+  if (d.error) { el.innerHTML = `<div class="disco"><span class="spin">Discovery unavailable: ${esc(d.error)}</span></div>`; return; }
+  const fabs = d.fabrics.map((f) => {
+    const mine = f.mine;
+    const n = (mine ? f.deviceNodes : f.nodes).length;
+    return `<div class="fab ${mine ? "mine" : ""}">
+      <span class="fdot"></span>
+      <div class="fmain">
+        <div class="fname">${mine ? "Your fabric (this controller)" : "Another ecosystem"} ${mine ? '<span class="tag you">YOU</span>' : '<span class="tag other">UNIDENTIFIED</span>'}</div>
+        <div class="fid">fabric ${esc(f.fabric)}</div>
+      </div>
+      <div class="fcount">${mine ? (n ? n + " device" + (n>1?"s":"") : "controller only") : n + " device" + (n>1?"s":"") + " · can't read yet"}</div>
+    </div>`;
+  }).join("");
+  el.innerHTML = `<div class="disco">
+    <div class="disco-head">
+      <div>
+        <div class="disco-title">Discovered on this network <span class="spin" id="rescan-status"></span></div>
+        <div class="disco-sub">Passive mDNS scan — sees every Matter device on the LAN, no fabric access needed. Devices on other ecosystems show up but stay unidentified until commissioned to your fabric.</div>
+      </div>
+      <div class="stat">
+        <div><b>${d.fabricsTotal}</b><span>fabrics</span></div>
+        <div><b>${d.foreignDevices}</b><span>not yours</span></div>
+        <div><b>${d.commissionableCount}</b><span>pairing now</span></div>
+      </div>
+    </div>
+    <div class="fabrics">${fabs || '<span class="spin">No Matter devices seen.</span>'}</div>
+  </div>`;
+}
+
+async function rescan() {
+  const s = document.getElementById("rescan-status");
+  if (s) s.textContent = "· scanning…";
+  try { renderDiscovery(await api("/api/discover")); }
+  catch (e) { renderDiscovery({ error: e.message }); }
+}
+
 document.getElementById("add").onclick = add;
-document.getElementById("refresh").onclick = render;
+document.getElementById("refresh").onclick = () => { render(); rescan(); };
 document.getElementById("code").addEventListener("keydown", (e) => { if (e.key === "Enter") add(); });
 render();
+rescan();
 setInterval(render, 4000);
+setInterval(rescan, 20000); // re-scan the network periodically
 </script>
 </body>
 </html>
