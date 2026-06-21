@@ -1,3 +1,9 @@
 node_modules/
 *.log
 .DS_Store
+
+# Matter controller runtime — large, machine-specific, and SECURITY-SENSITIVE
+# (controller/data holds your fabric's private keys — never commit it)
+controller/.venv/
+controller/data/
+.pids

@@ -9,6 +9,13 @@ guessing from stale training data.
 Everything here is generated **directly from each project's canonical public
 data source**, so it's reproducible, license-clean, and easy to keep current.
 
+## Demo: Command Central
+
+[`central/`](central/) is a working **Matter dashboard** — it runs your own
+Matter controller fabric locally and shows/controls every device you commission
+to it (real vendor, product, and device type read straight from the device). See
+[`central/README.md`](central/README.md). Run it with `./central/start.sh`.
+
 ## Catalogs
 
 | Catalog | What it covers | Markdown | JSON | Source |
